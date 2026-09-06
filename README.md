@@ -1,6 +1,6 @@
-# Bucket Studio
+# HF Bucket Studio
 
-Bucket Studio is a secure media workspace for Hugging Face Storage Buckets. It uses the Manus WebDev full-stack template with a server-side Hugging Face API proxy, Manus authentication, and a dark media-oriented interface designed for fast video discovery.
+HF Bucket Studio is a secure media workspace for Hugging Face Storage Buckets. It uses the Manus WebDev full-stack template with a server-side Hugging Face API proxy, Manus authentication, and a dark media-oriented interface designed for fast video discovery.
 
 ## Features
 
