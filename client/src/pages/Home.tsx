@@ -1,33 +1,89 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { startLogin } from "@/const";
+import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
-import { Streamdown } from 'streamdown';
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
+import {
+  Archive, ArrowDownToLine, ChevronRight, CircleHelp, Clock3, Copy, Download, File, FileImage,
+  FileText, Film, FolderOpen, HardDrive, Image as ImageIcon, LayoutGrid, ListFilter, Loader2,
+  LogOut, MoreHorizontal, PanelLeftClose, Play, RefreshCw, Search, Settings2, ShieldCheck,
+  Sparkles, Trash2, Video, X,
+} from "lucide-react";
+import { useMemo, useState } from "react";
 
-/**
- * All content in this page are only for example, replace with your own feature implementation
- * When building pages, remember your instructions in Frontend Workflow, Frontend Best Practices, Design Guide and Common Pitfalls
- */
+type FileEntry = { type: "file" | "directory"; path: string; size?: number; uploadedAt?: string };
+type Filter = "all" | "video" | "image" | "other";
+const BUCKET_FALLBACK = "155422li/manus";
+
+function formatBytes(bytes = 0) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+function formatDate(date?: string) { return date ? new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", year: "numeric" }).format(new Date(date)) : "—"; }
+function fileKind(path: string): "video" | "image" | "audio" | "text" | "file" {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  if (["mp4", "webm", "mov", "m4v", "mkv", "avi", "mpeg", "mpg"].includes(ext)) return "video";
+  if (["jpg", "jpeg", "png", "gif", "webp", "avif", "svg"].includes(ext)) return "image";
+  if (["mp3", "wav", "ogg", "m4a", "flac"].includes(ext)) return "audio";
+  if (["txt", "md", "json", "csv", "log", "yaml", "yml"].includes(ext)) return "text";
+  return "file";
+}
+function mediaUrl(bucketId: string, path: string, download = false) { const search = new URLSearchParams({ bucket: bucketId, path }); if (download) search.set("download", "1"); return `/api/media?${search.toString()}`; }
+function fileName(path: string) { return path.split("/").pop() || path; }
+function initials(name?: string | null) { return (name || "U").split(" ").map(part => part[0]).join("").slice(0, 2).toUpperCase(); }
+function FileGlyph({ kind, className = "h-5 w-5" }: { kind: string; className?: string }) { if (kind === "video") return <Film className={className} />; if (kind === "image") return <ImageIcon className={className} />; if (kind === "text") return <FileText className={className} />; return <File className={className} />; }
+
+function SignedOut() {
+  return <div className="min-h-screen bg-[#090a0c] text-white grid place-items-center px-6"><div className="w-full max-w-md rounded-[28px] border border-white/10 bg-white/[0.045] p-8 shadow-[0_30px_100px_rgba(0,0,0,.35)]"><div className="mb-8 flex items-center gap-3"><div className="brand-mark">B</div><div><p className="text-sm font-semibold tracking-tight">Bucket Studio</p><p className="text-xs text-white/40">Private media workspace</p></div></div><p className="eyebrow mb-3">HUGGING FACE STORAGE</p><h1 className="max-w-sm text-3xl font-semibold tracking-[-.04em]">Your files,<br /><span className="text-[#ff9f6e]">beautifully in reach.</span></h1><p className="mt-4 text-sm leading-6 text-white/55">Sign in to open your private bucket library. Your Hugging Face access token stays server-side and never reaches this browser.</p><Button onClick={() => startLogin()} className="mt-8 h-12 w-full rounded-2xl bg-[#f27b4d] font-semibold text-[#1c0d08] hover:bg-[#ff9869]">Continue to workspace <ChevronRight className="h-4 w-4" /></Button><div className="mt-6 flex items-center gap-2 text-[11px] text-white/35"><ShieldCheck className="h-3.5 w-3.5 text-[#79d2a0]" /> Private by default · Edge-streamed playback</div></div></div>;
+}
+function LoadingScreen() { return <div className="min-h-screen bg-[#090a0c] grid place-items-center text-white/50"><Loader2 className="h-6 w-6 animate-spin text-[#f27b4d]" /></div>; }
+
 export default function Home() {
-  // The useAuth hook provides authentication state.
-  // To implement login/logout, call logout(), or start login from an event
-  // handler: onClick={() => startLogin()} (imported from "@/const"). Never call
-  // startLogin() during render (no href={startLogin()}) — it mints a one-time
-  // nonce cookie and must run only at the moment of navigation.
-  let { user, loading, error, isAuthenticated, logout } = useAuth();
+  const { user, loading, logout } = useAuth();
+  const [activeBucket, setActiveBucket] = useState(BUCKET_FALLBACK);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [query, setQuery] = useState("");
+  const [showDetails, setShowDetails] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const bucketsQuery = trpc.buckets.list.useQuery(undefined, { enabled: Boolean(user) });
+  const bucketInfoQuery = trpc.buckets.info.useQuery({ bucketId: activeBucket }, { enabled: Boolean(user) });
+  const treeQuery = trpc.buckets.tree.useQuery({ bucketId: activeBucket }, { enabled: Boolean(user) });
+  const utils = trpc.useUtils();
+  const deleteFile = trpc.buckets.deleteFile.useMutation({ onSuccess: async () => { toast.success("File deleted"); setSelectedPath(null); await utils.buckets.tree.invalidate({ bucketId: activeBucket }); await utils.buckets.info.invalidate({ bucketId: activeBucket }); }, onError: error => toast.error(error.message || "Unable to delete file") });
+  const entries = (treeQuery.data ?? []) as FileEntry[];
+  const files = useMemo(() => entries.filter(entry => entry.type === "file"), [entries]);
+  const filteredFiles = useMemo(() => files.filter(file => { const kind = fileKind(file.path); const matches = filter === "all" || (filter === "video" && kind === "video") || (filter === "image" && kind === "image") || (filter === "other" && !["video", "image"].includes(kind)); return matches && fileName(file.path).toLowerCase().includes(query.toLowerCase()); }), [files, filter, query]);
+  const selectedFile = files.find(file => file.path === selectedPath) ?? files[0];
+  const selectedKind = selectedFile ? fileKind(selectedFile.path) : "file";
+  const currentBucket = bucketsQuery.data?.find(bucket => bucket.id === activeBucket) ?? bucketInfoQuery.data;
+  if (loading) return <LoadingScreen />;
+  if (!user) return <SignedOut />;
+  const refresh = async () => { await Promise.all([treeQuery.refetch(), bucketInfoQuery.refetch(), bucketsQuery.refetch()]); toast.success("Workspace refreshed"); };
+  const deleteSelected = () => { if (selectedFile && window.confirm(`Delete “${fileName(selectedFile.path)}” permanently?`)) deleteFile.mutate({ bucketId: activeBucket, path: selectedFile.path }); };
 
-  // If theme is switchable in App.tsx, we can implement theme toggling like this:
-  // const { theme, toggleTheme } = useTheme();
+  return <div className="workspace-shell min-h-screen bg-[#090a0c] text-[#eef0f1]">
+    <aside className={`workspace-sidebar ${sidebarOpen ? "is-open" : "is-closed"}`}>
+      <div className="flex items-center justify-between px-5 py-5"><div className="flex items-center gap-3"><div className="brand-mark">B</div>{sidebarOpen && <div><p className="text-[13px] font-semibold tracking-tight">Bucket Studio</p><p className="text-[10px] uppercase tracking-[.17em] text-white/30">Media workspace</p></div>}</div><button className="icon-button text-white/40 hover:text-white" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar"><PanelLeftClose className="h-4 w-4" /></button></div>
+      {sidebarOpen && <><div className="px-4 pt-3"><p className="eyebrow mb-3 px-2">LIBRARY</p><nav className="space-y-1"><button className="nav-item active"><LayoutGrid className="h-4 w-4" /> Overview <span className="ml-auto text-[10px] text-white/35">⌘ 1</span></button><button className="nav-item" onClick={() => toast.info("All files are already visible in Overview")}><Archive className="h-4 w-4" /> All files</button></nav></div><div className="my-7 border-t border-white/[.07]" /><div className="px-4"><div className="mb-3 flex items-center justify-between px-2"><p className="eyebrow">BUCKETS</p><span className="rounded-full bg-white/[.07] px-2 py-0.5 text-[10px] text-white/45">{bucketsQuery.data?.length ?? 0}</span></div><div className="space-y-1.5">{(bucketsQuery.data ?? []).map(bucket => <button key={bucket.id} className={`bucket-item ${bucket.id === activeBucket ? "selected" : ""}`} onClick={() => { setActiveBucket(bucket.id); setSelectedPath(null); }}><span className="bucket-dot" /><span className="min-w-0 flex-1 truncate text-left">{bucket.id.split("/").pop()}</span><span className="text-[10px] text-white/30">{bucket.totalFiles}</span></button>)}{bucketsQuery.isLoading && <div className="px-2 text-xs text-white/35">Loading buckets…</div>}{!bucketsQuery.isLoading && !bucketsQuery.data?.length && <div className="rounded-xl border border-dashed border-white/10 px-3 py-4 text-xs leading-5 text-white/35">No buckets available for this token.</div>}</div></div></>}
+      <div className="mt-auto p-4"><div className={`rounded-2xl border border-white/[.07] bg-white/[.035] p-3 ${!sidebarOpen ? "hidden" : ""}`}><div className="mb-3 flex items-center gap-2 text-[11px] text-white/45"><ShieldCheck className="h-3.5 w-3.5 text-[#79d2a0]" /> Secure server connection</div><div className="h-1.5 overflow-hidden rounded-full bg-white/[.07]"><div className="h-full w-[72%] rounded-full bg-[#f27b4d]" /></div><div className="mt-2 flex justify-between text-[10px] text-white/30"><span>Storage used</span><span>{formatBytes(currentBucket?.size)}</span></div></div><button className={`mt-4 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-white/50 transition hover:bg-white/[.06] hover:text-white ${!sidebarOpen ? "justify-center" : ""}`} onClick={logout}><div className="avatar-chip">{initials(user.name)}</div>{sidebarOpen && <><span className="min-w-0 flex-1 truncate text-xs">{user.name || user.email || "Account"}</span><LogOut className="h-3.5 w-3.5" /></>}</button></div>
+    </aside>
+    <main className={`workspace-main ${sidebarOpen ? "sidebar-space" : "full-space"}`}>
+      <header className="workspace-topbar"><div className="flex min-w-0 items-center gap-2 text-xs text-white/35"><button className="icon-button mr-1 text-white/50 hover:text-white" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar"><PanelLeftClose className="h-4 w-4 rotate-180" /></button><span>Storage</span><ChevronRight className="h-3.5 w-3.5" /><span className="text-white/80">{activeBucket.split("/").pop()}</span><span className="status-pill ml-2"><span className="status-pulse" /> Connected</span></div><div className="flex items-center gap-2"><button className="icon-button text-white/40 hover:text-white" onClick={() => toast.info("Help center coming soon")} aria-label="Help"><CircleHelp className="h-4 w-4" /></button><button className="icon-button text-white/40 hover:text-white" onClick={() => toast.info("Settings coming soon")} aria-label="Settings"><Settings2 className="h-4 w-4" /></button><div className="top-avatar">{initials(user.name)}</div></div></header>
+      <div className="workspace-content"><section className="workspace-heading"><div><p className="eyebrow accent-text">PRIVATE BUCKET</p><h1 className="mt-2 text-[clamp(2rem,4vw,3.4rem)] font-semibold tracking-[-.065em]">{activeBucket.split("/").pop()}</h1><p className="mt-2 text-sm text-white/40">A focused view of your media library, streamed from Hugging Face.</p></div><div className="flex items-center gap-2"><Button variant="ghost" className="h-10 rounded-xl border border-white/[.08] bg-white/[.035] px-3 text-white/60 hover:bg-white/[.08] hover:text-white" onClick={refresh} disabled={treeQuery.isFetching}><RefreshCw className={`h-4 w-4 ${treeQuery.isFetching ? "animate-spin" : ""}`} /><span className="hidden sm:inline">Refresh</span></Button><Button className="h-10 rounded-xl bg-[#f27b4d] px-4 font-semibold text-[#1d100b] shadow-[0_8px_30px_rgba(242,123,77,.15)] hover:bg-[#ff9869]" onClick={() => toast.info("Uploads are intentionally disabled in this read-first workspace")}><ArrowDownToLine className="h-4 w-4 rotate-180" /> Upload</Button></div></section>
+      <section className="stats-grid"><div className="stat-card"><div className="stat-icon orange"><HardDrive className="h-4 w-4" /></div><div><p className="stat-label">TOTAL STORAGE</p><p className="stat-value">{formatBytes(currentBucket?.size)}</p></div><span className="stat-trend">+{currentBucket?.totalFiles ?? 0} files</span></div><div className="stat-card"><div className="stat-icon purple"><File className="h-4 w-4" /></div><div><p className="stat-label">OBJECTS</p><p className="stat-value">{currentBucket?.totalFiles ?? files.length}</p></div><span className="stat-trend neutral">live</span></div><div className="stat-card"><div className="stat-icon green"><ShieldCheck className="h-4 w-4" /></div><div><p className="stat-label">VISIBILITY</p><p className="stat-value">{currentBucket?.private ? "Private" : "Public"}</p></div><span className="stat-trend neutral">protected</span></div></section>
+      <section className="files-section"><div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"><div><h2 className="text-lg font-semibold tracking-[-.03em]">Files <span className="ml-1 text-sm font-normal text-white/30">{filteredFiles.length}</span></h2><p className="mt-1 text-xs text-white/35">Browse, preview and download at the edge.</p></div><div className="flex flex-wrap items-center gap-2"><div className="search-box"><Search className="h-3.5 w-3.5 text-white/30" /><Input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search files" className="h-8 w-36 border-0 bg-transparent p-0 text-xs text-white shadow-none placeholder:text-white/25 focus-visible:ring-0" /></div><div className="filter-group"><ListFilter className="h-3.5 w-3.5 text-white/30" />{(["all", "video", "image", "other"] as Filter[]).map(item => <button key={item} className={`filter-button ${filter === item ? "selected" : ""}`} onClick={() => setFilter(item)}>{item === "all" ? "All" : item === "video" ? "Video" : item === "image" ? "Images" : "Other"}</button>)}</div></div></div>
+        {treeQuery.isLoading ? <div className="empty-state"><Loader2 className="h-6 w-6 animate-spin text-[#f27b4d]" /><p>Reading your bucket…</p></div> : treeQuery.isError ? <div className="empty-state"><X className="h-6 w-6 text-[#f27777]" /><p>Unable to read this bucket.</p><Button onClick={() => treeQuery.refetch()} variant="outline" className="mt-2 rounded-xl border-white/10 text-xs">Try again</Button></div> : filteredFiles.length === 0 ? <div className="empty-state"><FolderOpen className="h-7 w-7 text-white/25" /><p>No files match this view.</p></div> : <div className={`file-layout ${showDetails ? "with-details" : ""}`}><div className="file-grid">{filteredFiles.map((file, index) => { const kind = fileKind(file.path); const selected = selectedFile?.path === file.path; return <button key={file.path} className={`file-card ${selected ? "selected" : ""}`} style={{ animationDelay: `${index * 45}ms` }} onClick={() => { setSelectedPath(file.path); setShowDetails(true); }}><div className={`file-preview ${kind}`}><div className="preview-noise" />{kind === "video" ? <><div className="video-badge"><Video className="h-3.5 w-3.5" /> VIDEO</div><div className="play-orb"><Play className="ml-0.5 h-5 w-5 fill-current" /></div><div className="preview-lines"><span /><span /><span /></div></> : <FileGlyph kind={kind} className="relative z-10 h-10 w-10 text-white/50" />}<span className="card-more"><MoreHorizontal className="h-4 w-4" /></span></div><div className="p-3.5"><div className="flex items-start gap-2"><div className="min-w-0 flex-1 text-left"><p className="truncate text-[13px] font-medium text-white/85">{fileName(file.path)}</p><p className="mt-1 truncate text-[11px] text-white/35">{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Root"}</p></div><span className="text-[10px] text-white/35">{formatBytes(file.size)}</span></div><div className="mt-3 flex items-center gap-1.5 text-[10px] text-white/30"><Clock3 className="h-3 w-3" /> {formatDate(file.uploadedAt)}</div></div></button>; })}</div>{showDetails && selectedFile && <FileDetails file={selectedFile} kind={selectedKind} bucketId={activeBucket} onClose={() => setShowDetails(false)} onDelete={deleteSelected} deleting={deleteFile.isPending} />}</div>}
+      </section></div>
+    </main>
+  </div>;
+}
 
-  return (
-    <div className="min-h-screen flex flex-col">
-      <main>
-        {/* Example: lucide-react for icons */}
-        <Loader2 className="animate-spin" />
-        Example Page
-        {/* Example: Streamdown for markdown rendering */}
-        <Streamdown>Any **markdown** content</Streamdown>
-        <Button variant="default">Example Button</Button>
-      </main>
-    </div>
-  );
+function FileDetails({ file, kind, bucketId, onClose, onDelete, deleting }: { file: FileEntry; kind: string; bucketId: string; onClose: () => void; onDelete: () => void; deleting: boolean }) {
+  const url = mediaUrl(bucketId, file.path); const downloadUrl = mediaUrl(bucketId, file.path, true);
+  const copyUrl = async () => { await navigator.clipboard.writeText(`${window.location.origin}${downloadUrl}`); toast.success("Download link copied"); };
+  return <aside className="details-panel"><div className="flex items-center justify-between"><p className="eyebrow">FILE DETAILS</p><button className="icon-button text-white/35 hover:text-white" onClick={onClose} aria-label="Close details"><X className="h-4 w-4" /></button></div><div className={`detail-preview ${kind}`}>{kind === "video" ? <><div className="detail-grid" /><Film className="relative z-10 h-9 w-9 text-[#ffb38e]" /><span className="absolute bottom-3 left-3 rounded-full bg-black/30 px-2 py-1 text-[10px] text-white/60">Native video preview</span></> : <FileGlyph kind={kind} className="h-10 w-10 text-white/55" />}</div><div className="mt-5"><h3 className="break-words text-base font-semibold leading-6 tracking-[-.02em]">{fileName(file.path)}</h3><p className="mt-1 break-all text-[11px] leading-5 text-white/35">{file.path}</p></div>{kind === "video" && <div className="mt-4 overflow-hidden rounded-xl border border-white/[.08] bg-black/25"><video controls preload="metadata" src={url} className="aspect-video w-full" /><p className="px-3 py-2 text-[10px] leading-4 text-white/35">If your browser cannot decode MKV, use Download for the original file.</p></div>}<div className="detail-meta mt-6"><div><span>Size</span><strong>{formatBytes(file.size)}</strong></div><div><span>Type</span><strong>{kind.toUpperCase()}</strong></div><div><span>Uploaded</span><strong>{formatDate(file.uploadedAt)}</strong></div></div><div className="mt-6 grid grid-cols-2 gap-2"><a className="detail-action primary" href={downloadUrl}><Download className="h-4 w-4" /> Download</a><button className="detail-action" onClick={copyUrl}><Copy className="h-4 w-4" /> Copy link</button></div><button className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-[#ff6f6f]/15 bg-[#ff6f6f]/[.06] py-2.5 text-xs text-[#ff9696] transition hover:bg-[#ff6f6f]/[.12]" onClick={onDelete} disabled={deleting}><Trash2 className="h-3.5 w-3.5" /> {deleting ? "Deleting…" : "Delete permanently"}</button><div className="mt-5 flex gap-2 rounded-xl bg-white/[.035] p-3 text-[10px] leading-4 text-white/35"><Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#f5a27c]" /> Range streaming is enabled for responsive playback and resumable downloads.</div></aside>;
 }
