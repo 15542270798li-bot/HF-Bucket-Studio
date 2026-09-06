@@ -3,7 +3,7 @@ const enc=new TextEncoder();
 async function sig(v,s){const k=await crypto.subtle.importKey('raw',enc.encode(s),{name:'HMAC',hash:'SHA-256'},false,['sign']);const b=new Uint8Array(await crypto.subtle.sign('HMAC',k,enc.encode(v)));return [...b].map(x=>x.toString(16).padStart(2,'0')).join('')}
 function cookies(r){return Object.fromEntries((r.headers.get('Cookie')||'').split(';').map(x=>x.trim().split('=' )).filter(x=>x.length===2))}
 async function ok(r,e){const [t,s]=(cookies(r)[COOKIE]||'').split('.');return !!t&&Number(t)>Date.now()&&s===await sig(t,e.ACCESS_COOKIE_SECRET)}
-const out=(x,status=200,extra={})=>new Response(JSON.stringify(x),{status,headers:{'content-type':'application/json;charset=utf-8',...extra}});
+const out=(x,status=200,extra={})=>new Response(JSON.stringify(x),{status,headers:{'content-type':'application/json;charset=utf-8','cache-control':'no-store',...extra}});
 function bid(x){if(!/^[\w.-]+\/[\w.-]+$/.test(x))throw Error('Invalid bucket id');return encodeURIComponent(x).replace('%2F','/')}
 function fp(x){if(!x||x.startsWith('/')||x.length>1024||x.includes('\0'))throw Error('Invalid file path');return x}
 async function hf(path,e,init={}){const r=await fetch(HF+path,{...init,headers:{Authorization:'Bearer '+e.HF_ACCESS_TOKEN,Accept:'application/json',...(init.headers||{})}});if(!r.ok)throw Error('Hugging Face API '+r.status);return r.json()}
