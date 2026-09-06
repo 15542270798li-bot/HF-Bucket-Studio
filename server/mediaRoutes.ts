@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { Readable } from "node:stream";
-import { createContext } from "./_core/context";
+import { isAccessGranted } from "./accessAuth";
 import { getBucketFileUrl, getHuggingFaceToken } from "./huggingface";
 
 const passthroughHeaders = [
@@ -13,8 +13,7 @@ const passthroughHeaders = [
 ];
 
 async function requireAuthenticated(req: Request, res: Response) {
-  const context = await createContext({ req, res } as never);
-  if (!context.user) {
+  if (!isAccessGranted(req)) {
     res.status(401).json({ error: "Authentication required" });
     return false;
   }
